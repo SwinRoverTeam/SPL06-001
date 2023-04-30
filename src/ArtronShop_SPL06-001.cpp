@@ -84,19 +84,20 @@ bool ArtronShop_SPL06_001::begin() {
 
     CHECK_OK(this->write_reg(REG_RESET, 0b1001)); // soft reset
     delay(50); // wait sensor ready and coefficients are available 
-    Sesnor_Status_t status;
+    Sensor_Status_t status;
     CHECK_OK(this->status(&status));
     CHECK_OK(status.SENSOR_RDY && status.COEF_RDY); // Check sensor ready and coefficients are available flag
     CHECK_OK(this->write_reg(REG_MEAS_CFG, 0b111)); // Set measurement mode: Continuous pressure and temperature measurement
-    CHECK_OK(this->write_reg(REG_PSR_CFG, 0b01000000)); // Pressure measurement rate: 100 - 16 measurements pr. sec., Pressure oversampling rate: 0000 - Single.
-    CHECK_OK(this->write_reg(REG_TMP_CFG, 0b01000000)); // Temperature measurement rate: 100 - 16 measurements pr. sec., Temperature oversampling rate: 0000 - Single.
-    
+    CHECK_OK(this->write_reg(REG_PSR_CFG, 0b01000000 | (this->p_oversampling_rate & 0x07))); // Pressure measurement rate: 100 - 16 measurements pr. sec., Pressure oversampling rate: ....
+    CHECK_OK(this->write_reg(REG_TMP_CFG, 0b11000000 | (this->t_oversampling_rate & 0x07))); // Temperature measurement rate: 100 - 16 measurements pr. sec., Temperature oversampling rate: ...
+    CHECK_OK(this->write_reg(REG_CFG_REG, (this->t_oversampling_rate >= _16_TIMES ? BIT3 : 0) | (this->p_oversampling_rate >= _16_TIMES ? BIT2 : 0))); // measurement data shift
+
     // Read Calibration Coefficients
     uint8_t buff[18];
     CHECK_OK(this->read_reg(REG_COEF_C0, buff, sizeof(buff)));
     calibration_coefficients.c0 = ((int16_t)(buff[0]) << 4) | (buff[1] >> 4);
-    calibration_coefficients.c1 = ((int16_t)(buff[1]) << 4) | buff[2];
-    calibration_coefficients.c00 = (((int32_t)(buff[3]) << 16) | ((int32_t)(buff[4]) << 8) | buff[5]) >> 4;
+    calibration_coefficients.c1 = ((int16_t)(buff[1] & 0x0F) << 8) | buff[2];
+    calibration_coefficients.c00 = (((int32_t)(buff[3]) << 12) | ((int32_t)(buff[4]) << 4) | (buff[5] >> 4));
     calibration_coefficients.c10 = ((int32_t)(buff[5] & 0x0F) << 16) | ((int32_t)(buff[6]) << 8) | buff[7];
     calibration_coefficients.c01 = ((int16_t)(buff[8]) << 8) | buff[9];
     calibration_coefficients.c11 = ((int16_t)(buff[10]) << 8) | buff[11];
@@ -122,25 +123,21 @@ bool ArtronShop_SPL06_001::begin() {
     return true;
 }
 
-bool ArtronShop_SPL06_001::status(Sesnor_Status_t *status) {
+bool ArtronShop_SPL06_001::status(Sensor_Status_t *status) {
     CHECK_OK(this->read_reg(REG_MEAS_CFG, (uint8_t*) status)); // Sensor Operating Mode and Status (MEAS_CFG)
 
     return true;
 }
 
-#define CHECK_OK_999(OP) { \
-    if (!(OP)) { \
-        return -999.0f; \
-    } \
-}
+bool ArtronShop_SPL06_001::measure() {
+    this->Pcomp = this->Tcomp = -1.0f;
 
-float ArtronShop_SPL06_001::pressure() {
-    Sesnor_Status_t status;
-    CHECK_OK_999(this->status(&status));
-    CHECK_OK_999(status.PRS_RDY);
+    Sensor_Status_t status;
+    CHECK_OK(this->status(&status));
+    CHECK_OK(status.PRS_RDY && status.TMP_RDY);
 
     uint8_t buff[6];
-    CHECK_OK_999(this->read_reg(REG_PSR_B2, buff, 6));
+    CHECK_OK(this->read_reg(REG_PSR_B2, buff, 6));
     int32_t Praw = (((int32_t) buff[0]) << 16) | (((int32_t) buff[1]) << 8) | buff[2];
     if (bitRead(Praw, 23)) {
         Praw |= 0xFF000000; // Set left bits to one for 2's complement conversion of negative number
@@ -150,29 +147,35 @@ float ArtronShop_SPL06_001::pressure() {
         Traw |= 0xFF000000; // Set left bits to one for 2's complement conversion of negative number
     }
 
-    float Traw_sc = Traw / 524288.0f; // Oversampling Rate: 1, Ref. Table 7 : Compensation Scale Factors
-    float Praw_sc = Praw / 524288.0f; // Oversampling Rate: 1, Ref. Table 7 : Compensation Scale Factors
+    /*
+    Serial.println("----------");
+    Serial.print("C0: "); Serial.println(calibration_coefficients.c0);
+    Serial.print("C1: "); Serial.println(calibration_coefficients.c1);
+    Serial.print("C00: "); Serial.println(calibration_coefficients.c00);
+    Serial.print("C10: "); Serial.println(calibration_coefficients.c10);
+    Serial.print("C01: "); Serial.println(calibration_coefficients.c01);
+    Serial.print("C11: "); Serial.println(calibration_coefficients.c11);
+    Serial.print("C20: "); Serial.println(calibration_coefficients.c20);
+    Serial.print("C21: "); Serial.println(calibration_coefficients.c21);
+    Serial.print("C30: "); Serial.println(calibration_coefficients.c30);
+    Serial.print("Traw: "); Serial.println(Traw);
+    Serial.print("Praw: "); Serial.println(Praw);
+    Serial.println("----------");
+    */
 
-    float Pcomp = calibration_coefficients.c00 + Praw_sc * (calibration_coefficients.c10 + Praw_sc *(calibration_coefficients.c20 + Praw_sc * calibration_coefficients.c30)) + Traw_sc * calibration_coefficients.c01 + Traw_sc * Praw_sc * (calibration_coefficients.c11 + Praw_sc * calibration_coefficients.c21);
+    float Traw_sc = Traw / (float) scale_factor[this->t_oversampling_rate];
+    float Praw_sc = Praw / (float) scale_factor[this->p_oversampling_rate];
 
-    return Pcomp;
+    this->Pcomp = calibration_coefficients.c00 + Praw_sc * (calibration_coefficients.c10 + Praw_sc *(calibration_coefficients.c20 + Praw_sc * calibration_coefficients.c30)) + Traw_sc * calibration_coefficients.c01 + Traw_sc * Praw_sc * (calibration_coefficients.c11 + Praw_sc * calibration_coefficients.c21);
+    this->Tcomp = calibration_coefficients.c0 * 0.5 + calibration_coefficients.c1 * Traw_sc;
+
+    return true;
 }
 
+float ArtronShop_SPL06_001::pressure() {
+    return this->Pcomp;
+}
 
 float ArtronShop_SPL06_001::temperature() {
-    Sesnor_Status_t status;
-    CHECK_OK_999(this->status(&status));
-    CHECK_OK_999(status.TMP_RDY);
-
-    uint8_t buff[3];
-    CHECK_OK_999(this->read_reg(REG_TMP_B2, buff, 3));
-    int32_t Traw = (((int32_t) buff[0]) << 16) | (((int32_t) buff[1]) << 8) | buff[2];
-    if (bitRead(Traw, 23)) {
-        Traw |= 0xFF000000; // Set left bits to one for 2's complement conversion of negative number
-    }
-
-    float Traw_sc = Traw / 524288.0f; // Oversampling Rate: 1, Ref. Table 7 : Compensation Scale Factors
-    float Tcomp = calibration_coefficients.c0 * 0.5 + calibration_coefficients.c1 * Traw_sc;
-
-    return Tcomp;
+    return this->Tcomp;
 }

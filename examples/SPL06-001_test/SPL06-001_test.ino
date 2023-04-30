@@ -15,11 +15,15 @@ void setup() {
 }
 
 void loop() {
-  Serial.print("Pressure: ");
-  Serial.print(spl06_001.pressure() * 0.01, 1); // 1 Pa = 0.01 hPa so Pa * 0.01 = hPa
-  Serial.print(" hPa\tTemperature: ");
-  Serial.print(spl06_001.temperature(), 1);
-  Serial.print(" *C");
-  Serial.println();
+  if (spl06_001.measure()) {
+    Serial.print("Pressure: ");
+    Serial.print(spl06_001.pressure() * 0.01, 2); // 1 Pa = 0.01 mbar so Pa * 0.01 = mBar
+    Serial.print(" mbar\tTemperature: ");
+    Serial.print(spl06_001.temperature(), 1);
+    Serial.print(" *C");
+    Serial.println();
+  } else {
+    Serial.println("SPL06-001 read error");
+  }
   delay(1000);
 }
