@@ -35,6 +35,9 @@
 #define REG_COEF_C30a (0x20)
 #define REG_COEF_C30b (0x21)
 
+#define BIT2 0x04 // Represents the bit at position 2 (0x04 is 00000100 in binary)
+#define BIT3 0x08 // Represents the bit at position 3 (0x08 is 00001000 in binary)
+
 ArtronShop_SPL06_001::ArtronShop_SPL06_001(uint8_t addr, TwoWire *wire) : _addr(addr), _wire(wire) {
     // -----
 }
